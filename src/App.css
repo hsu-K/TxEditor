@@ -1,0 +1,125 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+
+  color: #e0e0e0;
+  background-color: #1e1e1e;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body,
+html {
+  width: 100%;
+  height: 100%;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+.app {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  background-color: #1e1e1e;
+}
+
+.editor-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.editor-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #252526;
+}
+
+.divider {
+  width: 4px;
+  background-color: #3e3e42;
+  cursor: col-resize;
+  user-select: none;
+  transition: background-color 0.2s;
+}
+
+.divider:hover {
+  background-color: #20c997;
+}
+
+.tabs {
+  display: flex;
+  background-color: #1e1e1e;
+  border-bottom: 1px solid #3e3e42;
+  height: 35px;
+  align-items: stretch;
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-right: 1px solid #3e3e42;
+  cursor: pointer;
+  background-color: #2d2d30;
+  transition: background-color 0.2s;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background-color: #3e3e42;
+}
+
+.tab.active {
+  background-color: #1e1e1e;
+  border-bottom: 2px solid #20c997;
+}
+
+.tab-name {
+  margin-right: 8px;
+  font-size: 13px;
+}
+
+.tab-close {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  padding: 0 5px;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.tab-close:hover {
+  color: #e0e0e0;
+}
+
+.no-file-selected {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: #858585;
+  font-size: 16px;
+}
