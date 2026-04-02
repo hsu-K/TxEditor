@@ -11,12 +11,23 @@ interface HistoryState {
   cursorOffset: number;
 }
 
-const Editor = ({ content, onChange }: EditorProps) => {
+const Editor: React.FC<EditorProps> = ({ content, onChange }) => {
   const editorRef = useRef<HTMLDivElement>(null);
-  const lastContentRef = useRef<string>(content);
+  const lastContentRef = useRef<string>("");
   const historyRef = useRef<HistoryState[]>([{ content, cursorOffset: 0 }]);
   const historyIndexRef = useRef<number>(0);
   const [, setUpdateTrigger] = useState(0);
+
+
+  // const setEditorContent = (content: string) => {
+  //   if (editorRef.current) {
+  //     editorRef.current.innerHTML = content;
+  //     lastContentRef.current = content;
+  //     // 重置歷史記錄
+  //     historyRef.current = [{ content, cursorOffset: 0 }];
+  //     historyIndexRef.current = 0;
+  //   }
+  // };
 
   // 只在 content 發生外部變化時更新（例如切換檔案），而不是由輸入引起的變化
   useEffect(() => {
@@ -28,6 +39,7 @@ const Editor = ({ content, onChange }: EditorProps) => {
       historyIndexRef.current = 0;
     }
   }, [content]);
+
 
   // 獲取光標在內容中的偏移位置
   const getCursorOffset = (): number => {
@@ -129,7 +141,9 @@ const Editor = ({ content, onChange }: EditorProps) => {
     }
   };
 
+  // 處理複製事件
   const handlePaste = (e: React.ClipboardEvent) => {
+    // 因為要處理圖片複製貼上，所以要阻止默認的貼上行為，自己來處理
     e.preventDefault();
     
     const items = e.clipboardData.items;
@@ -139,7 +153,9 @@ const Editor = ({ content, onChange }: EditorProps) => {
         const file = item.getAsFile();
         if (file) {
           const reader = new FileReader();
+          // onload 會在FileReader完成讀取後觸發(當reader.readAsDataURL(file)完成後)
           reader.onload = (event) => {
+            // 創建一個 img 元素，並將讀取到的圖片數據設置為 src
             const img = document.createElement("img");
             img.src = event.target?.result as string;
             img.className = "pasted-image";
@@ -150,6 +166,7 @@ const Editor = ({ content, onChange }: EditorProps) => {
               editorRef.current.appendChild(emptyNode);
               
               // 設置光標到文本節點（圖片之後）
+              // range是範圍選擇物件，用來定義光標位置
               const range = document.createRange();
               const sel = window.getSelection();
               range.setStart(emptyNode, 0);
@@ -169,7 +186,17 @@ const Editor = ({ content, onChange }: EditorProps) => {
       } else if (item.type === "text/plain") {
         // 處理文本
         item.getAsString((text) => {
-          document.execCommand("insertText", false, text);
+          // document.execCommand("insertText", false, text);
+          const selection = window.getSelection();
+          if (selection && editorRef.current) {
+            const range = selection.getRangeAt(0);
+            const textNode = document.createTextNode(text);
+            range.insertNode(textNode);
+            range.setStartAfter(textNode);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
           if (editorRef.current) {
             const html = editorRef.current.innerHTML;
             lastContentRef.current = html;
@@ -181,6 +208,7 @@ const Editor = ({ content, onChange }: EditorProps) => {
     }
   };
 
+  // 處理輸入事件，更新內容並添加到歷史記錄
   const handleInput = () => {
     if (editorRef.current) {
       const html = editorRef.current.innerHTML;
