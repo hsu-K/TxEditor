@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import FileExplorer from "./components/FileExplorer";
 import Editor from "./components/Editor";
 import "./App.css";
+import { invoke } from "@tauri-apps/api/core";
 
 interface FileItem {
   id: string;
@@ -12,39 +13,31 @@ interface FileItem {
 }
 
 const App = () => {
-  const [files, setFiles] = useState<FileItem[]>([
-    {
-      id: "1",
-      name: "README.md",
-      type: "file",
-      content: "# TX Editor\n\nA simple text editor built with Tauri and React.",
-    },
-    {
-      id: "2",
-      name: "src",
-      type: "folder",
-      children: [
-        {
-          id: "2-1",
-          name: "index.ts",
-          type: "file",
-          content: "// Main entry point\nconsole.log('Hello World');",
-        },
-        {
-          id: "2-2",
-          name: "utils.ts",
-          type: "file",
-          content: "// Utility functions\n\nexport function sum(a: number, b: number) {\n  return a + b;\n}",
-        },
-      ],
-    },
-    {
-      id: "3",
-      name: "config.json",
-      type: "file",
-      content: '{\n  "name": "TX Editor",\n  "version": "0.1.0"\n}',
-    },
-  ]);
+
+  function convertFileInfo(fileInfo: any): FileItem {
+    return {
+      id: fileInfo.id,
+      name: fileInfo.name,
+      type: fileInfo.filetype === "Folder" ? "folder" : "file",
+      content: fileInfo.content || undefined,
+      children: fileInfo.children 
+        ? fileInfo.children.map((child: any) => convertFileInfo(child))
+        : undefined,
+    };
+  }
+
+  async function fetchFiles() {
+    const result = await invoke("get_files", { dirpath: "..\\TxtFiles", nowId: "" });
+    const convertedFiles = (result as any[]).map(file => convertFileInfo(file));
+    setFiles(convertedFiles);
+    console.log(convertedFiles);
+  }
+
+  useEffect(() => {
+    fetchFiles();
+  }, []);
+
+  const [files, setFiles] = useState<FileItem[]>([]);
 
   const [selectedFileId, setSelectedFileId] = useState<string>("");
   const [openTabs, setOpenTabs] = useState<string[]>([]);
