@@ -7,9 +7,11 @@ import { invoke } from "@tauri-apps/api/core";
 interface FileItem {
   id: string;
   name: string;
+  file_path: string;
   type: "file" | "folder";
   content?: string;
   children?: FileItem[];
+  parentId?: string;
 }
 
 const App = () => {
@@ -18,18 +20,27 @@ const App = () => {
     return {
       id: fileInfo.id,
       name: fileInfo.name,
+      file_path: fileInfo.file_path || "",
       type: fileInfo.filetype === "Folder" ? "folder" : "file",
       content: fileInfo.content || undefined,
       children: fileInfo.children 
         ? fileInfo.children.map((child: any) => convertFileInfo(child))
         : undefined,
+      parentId: fileInfo.parent_id || undefined,
     };
   }
 
   async function fetchFiles() {
-    const result = await invoke("get_files", { dirpath: "..\\TxtFiles", nowId: "" });
+    const result = await invoke("list_all_files");
     const convertedFiles = (result as any[]).map(file => convertFileInfo(file));
     setFiles(convertedFiles);
+
+    // 啟動時只展開 documents 這一層，子資料夾維持收合
+    const documentsNode = convertedFiles.find(
+      (item) => item.type === "folder" && item.name === "documents"
+    );
+    setExpandedFolders(documentsNode ? new Set([documentsNode.id]) : new Set());
+
     console.log(convertedFiles);
   }
 
@@ -44,20 +55,6 @@ const App = () => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [explorerWidth, setExplorerWidth] = useState<number>(250);
   const [isDragging, setIsDragging] = useState(false);
-
-  // 找出文件的所有父文件夾IDs，用於自動展開
-  const getParentFolderIds = (fileId: string): string[] => {
-    const parentIds: string[] = [];
-    while (fileId.length > 1) {
-      const parentId = fileId.substring(0, fileId.lastIndexOf("-"));
-      if (parentId) {
-        parentIds.push(parentId);
-        fileId = parentId;
-      }
-    }
-    parentIds.reverse(); // 反轉順序，從根目錄到當前文件
-    return parentIds;
-  };
 
   // 利用id來尋找文件，無論它在文件樹的哪個位置
   const getFileById = (id: string): FileItem | undefined => {
@@ -75,7 +72,7 @@ const App = () => {
   };
 
   // 當用戶選擇文件時，更新選中的文件ID並確保該文件在打開的標籤中，若tabs中沒有則添加它
-  const handleFileSelect = (fileId: string) => {
+  const handleFileSelect = async (fileId: string) => {
     const file = getFileById(fileId);
     if (file && file.type === "file") {
       setSelectedFileId(fileId);
@@ -84,7 +81,7 @@ const App = () => {
       }
       
       // 自動展開該文件所在的所有父文件夾
-      const parentFolders = getParentFolderIds(fileId);
+      const parentFolders: string[] = await invoke("get_parent_folders", { "fileId": fileId });
       // console.log("Parent folders to expand:", parentFolders);
       const newExpandedFolders = new Set(expandedFolders);
       parentFolders.forEach((folderId) => newExpandedFolders.add(folderId));
