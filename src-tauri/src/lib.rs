@@ -32,74 +32,7 @@ pub struct FileInfo {
     parent_id: Option<String>,
 }
 
-static FILE_MAP: Lazy<Mutex<HashMap<String, FileInfo>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static FILE_TREE: Lazy<Mutex<Vec<FileInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
-fn update_file_map(file_info: &FileInfo) {
-    let mut file_map = FILE_MAP.lock().unwrap();
-    file_map.insert(file_info.id.clone(), file_info.clone());
-}
-
-// 獲取指定目錄下的所有文件和文件夾信息
-#[tauri::command]
-// fn get_files(dirpath: &str, now_id: &str) -> Vec<FileInfo> {
-//     let path = PathBuf::from(&dirpath);
-//     if !(path.exists() && path.is_dir()) {
-//         return vec![];
-//     }
-//     let mut files = Vec::new();
-//     let mut id_counter: i32 = 1;
-
-//     // let mut file_map = FILE_MAP.lock().unwrap();
-
-//     match fs::read_dir(path) {
-//         Ok(entries) => {
-//             for entry in entries {
-//                 match entry {
-//                     Ok(entry) => {
-//                         // println!("{:?}", entry.metadata());
-//                         let file_type = if let Ok(metadata) = entry.metadata() {
-//                             if metadata.is_dir() {
-//                                 FileType::Folder
-//                             } else {
-//                                 FileType::File
-//                             }
-//                         } else {
-//                             FileType::File // Default to File if metadata cannot be read
-//                         };
-
-//                         let mut file_info = FileInfo {
-//                             id: now_id.to_string() + &id_counter.to_string(),
-//                             name: entry.file_name().to_string_lossy().to_string(),
-//                             file_path: Some(entry.path().to_string_lossy().to_string()),
-//                             filetype: file_type,
-//                             content: String::new(),
-//                             children: None,
-//                         };
-
-//                         if file_info.filetype == FileType::Folder {
-//                             println!("Folder: {}", file_info.name);
-//                             let subfolder_files: Vec<FileInfo> = get_files(&entry.path().to_string_lossy().to_string(), &format!("{}-", file_info.id));
-//                             file_info.children = Some(subfolder_files);
-//                         } else {
-//                             file_info.content = get_file_content(&entry.path().to_string_lossy().to_string());
-//                             println!("File: {}", file_info.name);
-//                         }
-//                         // file_map.insert(file_info.id.clone(), file_info.clone());
-//                         update_file_map(&file_info);
-//                         files.push(file_info);
-//                         id_counter += 1;
-//                     }
-//                     Err(_) => continue,
-//                 }
-//             }
-//         }
-//         Err(e) => Err(e.to_string()).unwrap_or_else(|err| {
-//             eprintln!("Error reading directory: {}", err);
-//         }),
-//     }
-//     files
-// }
 
 // 讀取文件內容
 fn get_file_content(file_path: &str) -> String {
@@ -114,21 +47,234 @@ fn get_file_content(file_path: &str) -> String {
 
 fn save_file_content(file_path: &str, file_id: &str, new_content: &str) -> Result<bool, String> {
     // 寫入文件系統
-    fs::write(file_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
+    // fs::write(file_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
     
-    // 更新 FILE_MAP
-    let mut file_map = FILE_MAP.lock().unwrap();
-    if let Some(file_info) = file_map.get_mut(file_id) {
-        file_info.content = new_content.to_string();
-    }
+    // // 更新 FILE_MAP
+    // let mut file_map = FILE_MAP.lock().unwrap();
+    // if let Some(file_info) = file_map.get_mut(file_id) {
+    //     file_info.content = new_content.to_string();
+    // }
 
     Ok(true)
+}
+
+// 啟用 SQLite 外鍵支持
+// fn enable_foreign_keys(conn: &rusqlite::Connection) -> Result<(), String> {
+//     conn.execute_batch("PRAGMA foreign_keys = ON;")
+//         .map_err(|e| format!("Failed to enable foreign keys: {}", e))
+// }
+
+// 解析 item_id，返回 (prefix, id)，例如 "file-123" -> ("file", 123)
+fn parse_item_id(item_id: &str) -> Result<(String, i32), String> {
+    let (prefix, raw_id) = item_id
+        .split_once('-')
+        .ok_or_else(|| "Invalid item id".to_string())?;
+
+    let id = raw_id
+        .parse::<i32>()
+        .map_err(|_| "Invalid item id".to_string())?;
+
+    Ok((prefix.to_string(), id))
+}
+
+// 取的folder或file的path，返回PathBuf
+fn get_folder_path(conn: &rusqlite::Connection, folder_id: i32) -> Result<PathBuf, String> {
+    let path = conn
+        .query_row(
+            "SELECT path FROM folders WHERE id = ?1",
+            rusqlite::params![folder_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query folder path: {}", e))?
+        .ok_or_else(|| "Folder not found".to_string())?;
+
+    Ok(PathBuf::from(path))
+}
+
+fn get_file_path(conn: &rusqlite::Connection, file_id: i32) -> Result<PathBuf, String> {
+    let path = conn
+        .query_row(
+            "SELECT path FROM notes WHERE id = ?1",
+            rusqlite::params![file_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query file path: {}", e))?
+        .ok_or_else(|| "File not found".to_string())?;
+
+    Ok(PathBuf::from(path))
+}
+
+fn path_exists_in_db(conn: &rusqlite::Connection, path: &str) -> Result<bool, String> {
+    let note_exists = conn
+        .query_row(
+            "SELECT 1 FROM notes WHERE path = ?1 LIMIT 1",
+            rusqlite::params![path],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to check file name: {}", e))?
+        .is_some();
+
+    if note_exists {
+        return Ok(true);
+    }
+
+    let folder_exists = conn
+        .query_row(
+            "SELECT 1 FROM folders WHERE path = ?1 LIMIT 1",
+            rusqlite::params![path],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to check file name: {}", e))?
+        .is_some();
+
+    Ok(folder_exists)
+}
+
+// 根據請求的名稱生成一個唯一的文件名稱，並返回該名稱和對應的完整路徑
+fn build_unique_file_name(
+    conn: &rusqlite::Connection,
+    folder_path: &Path,
+    requested_name: &str,
+) -> Result<(String, PathBuf), String> {
+    let requested_name = requested_name.trim();
+    if requested_name.is_empty() {
+        return Err("File name cannot be empty".to_string());
+    }
+
+    if requested_name.contains('/') || requested_name.contains('\\') {
+        return Err("File name cannot contain path separators".to_string());
+    }
+
+    // 分解主名和副檔名
+    let requested_path = Path::new(requested_name);
+    let stem = requested_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(requested_name);
+    let extension = requested_path.extension().and_then(|value| value.to_str());
+
+    for index in 0..1000 {
+        let candidate_name = if index == 0 {
+            requested_name.to_string()
+        } else if let Some(extension) = extension {
+            format!("{} ({}).{}", stem, index, extension)
+        } else {
+            format!("{} ({})", stem, index)
+        };
+
+        let candidate_path = folder_path.join(&candidate_name);
+        let candidate_db_path = normalize_path_for_db(&candidate_path);
+
+        if !candidate_path.exists() && !path_exists_in_db(conn, &candidate_db_path)? {
+            return Ok((candidate_name, candidate_path));
+        }
+    }
+
+    Err("Unable to generate a unique file name".to_string())
+}
+
+#[tauri::command]
+fn create_file_in_folder(folder_id: &str, file_name: &str) -> Result<FileInfo, String> {
+    // eprintln!("Creating file '{}' in folder '{}'", file_name, folder_id);
+    let (_, raw_folder_id) = parse_item_id(folder_id)?;
+    let pool = DB_POOL
+        .get()
+        .ok_or_else(|| "Database pool not initialized".to_string())?;
+    let conn = pool.get().map_err(|e| format!("Failed to access database: {}", e))?;
+
+    // enable_foreign_keys(&conn)?;
+
+    let folder_path = get_folder_path(&conn, raw_folder_id)?;
+    // 確保資料夾存在，如果不存在則建立
+    fs::create_dir_all(&folder_path)
+        .map_err(|e| format!("Failed to prepare folder: {}", e))?;
+
+    // 生成唯一的文件名稱和對應的完整路徑
+    let (candidate_name, candidate_path) = build_unique_file_name(&conn, &folder_path, file_name)?;
+    fs::File::create(&candidate_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    let db_path = normalize_path_for_db(&candidate_path);
+    conn.execute(
+        "INSERT INTO notes (folder_id, title, path, updated_at)
+         VALUES (?1, ?2, ?3, datetime('now'))",
+        rusqlite::params![raw_folder_id, candidate_name, db_path],
+    )
+    .map_err(|e| format!("Failed to create database record: {}", e))?;
+
+    let created_id = conn.last_insert_rowid() as i32;
+
+    Ok(FileInfo {
+        id: format!("file-{}", created_id),
+        name: candidate_name,
+        file_path: Some(normalize_path_for_db(&candidate_path)),
+        filetype: FileType::File,
+        content: String::new(),
+        children: None,
+        parent_id: Some(format!("folder-{}", raw_folder_id)),
+    })
+}
+
+#[tauri::command]
+fn delete_item(item_id: &str) -> Result<(), String> {
+    let (prefix, raw_id) = parse_item_id(item_id)?;
+    let pool = DB_POOL
+        .get()
+        .ok_or_else(|| "Database pool not initialized".to_string())?;
+    let conn = pool.get().map_err(|e| format!("Failed to access database: {}", e))?;
+
+    // enable_foreign_keys(&conn)?;
+
+    // 根據前墜識別是文件還是資料夾，執行相應的刪除邏輯
+    match prefix.as_str() {
+        "file" => {
+            let file_path = get_file_path(&conn, raw_id)?;
+            fs::remove_file(&file_path)
+                .map_err(|e| format!("Failed to delete file: {}", e))?;
+
+            conn.execute(
+                "DELETE FROM notes WHERE id = ?1",
+                rusqlite::params![raw_id],
+            )
+            .map_err(|e| format!("Failed to remove file record: {}", e))?;
+        }
+        "folder" => {
+            let (folder_path, parent_id): (String, Option<i32>) = conn
+                .query_row(
+                    "SELECT path, parent_id FROM folders WHERE id = ?1",
+                    rusqlite::params![raw_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i32>>(1)?)),
+                )
+                .optional()
+                .map_err(|e| format!("Failed to query folder: {}", e))?
+                .ok_or_else(|| "Folder not found".to_string())?;
+
+            if parent_id.is_none() {
+                return Err("The root folder cannot be deleted".to_string());
+            }
+
+            fs::remove_dir_all(&folder_path)
+                .map_err(|e| format!("Failed to delete folder: {}", e))?;
+
+            conn.execute(
+                "DELETE FROM folders WHERE id = ?1",
+                rusqlite::params![raw_id],
+            )
+            .map_err(|e| format!("Failed to remove folder record: {}", e))?;
+        }
+        _ => return Err("Unknown item type".to_string()),
+    }
+
+    Ok(())
 }
 
 // 列出所有文件和文件夾信息，並更新全局 FILE_LIST
 #[tauri::command]
 fn list_all_files() -> Vec<FileInfo> {
-    FILE_MAP.lock().unwrap().clear();
     // let files = get_files("..\\TxtFiles", "");
     let files = list_entries(None);
     match files {
@@ -280,7 +426,7 @@ fn init_db(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tauri::command]
-fn get_parent_folders(fileId: &str) -> Vec<String> {
+fn get_parent_folders(file_id: &str) -> Vec<String> {
     let pool = match DB_POOL.get() {
         Some(pool) => pool,
         None => return vec![],
@@ -292,7 +438,7 @@ fn get_parent_folders(fileId: &str) -> Vec<String> {
     };
 
     // 以目標節點為起點，先找到第一個父資料夾 id。
-    let mut current_parent_id: Option<i32> = if let Some(raw_id) = fileId.strip_prefix("file-") {
+    let mut current_parent_id: Option<i32> = if let Some(raw_id) = file_id.strip_prefix("file-") {
         let file_id = match raw_id.parse::<i32>() {
             Ok(id) => id,
             Err(_) => return vec![],
@@ -309,7 +455,7 @@ fn get_parent_folders(fileId: &str) -> Vec<String> {
             Ok(value) => value.flatten(),
             Err(_) => return vec![],
         }
-    } else if let Some(raw_id) = fileId.strip_prefix("folder-") {
+    } else if let Some(raw_id) = file_id.strip_prefix("folder-") {
         let folder_id = match raw_id.parse::<i32>() {
             Ok(id) => id,
             Err(_) => return vec![],
@@ -366,7 +512,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders])
+        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders, create_file_in_folder, delete_item])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -30,22 +30,35 @@ const App = () => {
     };
   }
 
-  async function fetchFiles() {
+  const collectFileIds = (item: FileItem): string[] => {
+    const childIds = item.children?.flatMap((child) => collectFileIds(child)) || [];
+    return [item.id, ...childIds];
+  };
+
+  async function fetchFiles(options?: { resetExpansion?: boolean; expandFolderIds?: string[] }) {
     const result = await invoke("list_all_files");
     const convertedFiles = (result as any[]).map(file => convertFileInfo(file));
     setFiles(convertedFiles);
 
-    // 啟動時只展開 documents 這一層，子資料夾維持收合
-    const documentsNode = convertedFiles.find(
-      (item) => item.type === "folder" && item.name === "documents"
-    );
-    setExpandedFolders(documentsNode ? new Set([documentsNode.id]) : new Set());
+    if (options?.resetExpansion) {
+      // 啟動時只展開 documents 這一層，子資料夾維持收合
+      const documentsNode = convertedFiles.find(
+        (item) => item.type === "folder" && item.name === "documents"
+      );
+      setExpandedFolders(documentsNode ? new Set([documentsNode.id]) : new Set());
+    }
 
-    console.log(convertedFiles);
+    if (options?.expandFolderIds?.length) {
+      setExpandedFolders((current) => {
+        const next = new Set(current);
+        options.expandFolderIds?.forEach((folderId) => next.add(folderId));
+        return next;
+      });
+    }
   }
 
   useEffect(() => {
-    fetchFiles();
+    fetchFiles({ resetExpansion: true });
   }, []);
 
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -81,7 +94,7 @@ const App = () => {
       }
       
       // 自動展開該文件所在的所有父文件夾
-      const parentFolders: string[] = await invoke("get_parent_folders", { "fileId": fileId });
+      const parentFolders: string[] = await invoke("get_parent_folders", { fileId });
       // console.log("Parent folders to expand:", parentFolders);
       const newExpandedFolders = new Set(expandedFolders);
       parentFolders.forEach((folderId) => newExpandedFolders.add(folderId));
@@ -120,6 +133,78 @@ const App = () => {
     }
   };
 
+  const handleDeleteItem = async (itemId: string) => {
+    const item = getFileById(itemId);
+    if (!item) {
+      return;
+    }
+
+    const confirmed = window.confirm(`確定要刪除 ${item.name} 嗎？`);
+    if (!confirmed) {
+      return;
+    }
+
+    const deletedIds = new Set(collectFileIds(item));
+
+    try {
+      await invoke("delete_item", { itemId });
+
+      const nextTabs = openTabs.filter((tabId) => !deletedIds.has(tabId));
+      setOpenTabs(nextTabs);
+      setExpandedFolders((current) => {
+        const next = new Set(current);
+        deletedIds.forEach((deletedId) => next.delete(deletedId));
+        return next;
+      });
+
+      if (deletedIds.has(selectedFileId)) {
+        setSelectedFileId(nextTabs.length > 0 ? nextTabs[nextTabs.length - 1] : "");
+      }
+
+      await fetchFiles();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "刪除失敗");
+    }
+  };
+
+  const handleCreateFileInFolder = async (folderId: string) => {
+    const fileName = window.prompt("請輸入新檔案名稱", "new_file");
+    if (!fileName) {
+      return;
+    }
+
+    const normalizedFileName = fileName.trim();
+    if (!normalizedFileName) {
+      return;
+    }
+
+    if (normalizedFileName.includes("/") || normalizedFileName.includes("\\")) {
+      window.alert("檔名不能包含路徑分隔符號");
+      return;
+    }
+
+    try {
+      console.log(`Creating file '${normalizedFileName}' in folder '${folderId}'`);
+        const createdFile = await invoke<FileItem>("create_file_in_folder", {
+          folderId,
+          fileName: normalizedFileName,
+      });
+      
+      console.log("Created file:", createdFile);
+      await fetchFiles();
+      setOpenTabs((current) => (current.includes(createdFile.id) ? current : [...current, createdFile.id]));
+      setSelectedFileId(createdFile.id);
+      setExpandedFolders((current) => {
+        const next = new Set(current);
+        next.add(folderId);
+        return next;
+      });
+    } catch (error) {
+      console.error("Backend error:", error);
+      window.alert(error instanceof Error ? error.message : "建立檔案失敗");
+    }
+  };
+
   const selectedFile = getFileById(selectedFileId);
 
   // 處理分割線拖動
@@ -149,6 +234,8 @@ const App = () => {
           <FileExplorer 
             files={files} 
             onFileSelect={handleFileSelect} 
+            onDeleteItem={handleDeleteItem}
+            onCreateFileInFolder={handleCreateFileInFolder}
             selectedFileId={selectedFileId}
             expandedFolders={expandedFolders}
             onExpandedFoldersChange={setExpandedFolders}
