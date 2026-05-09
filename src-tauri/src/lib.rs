@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use std::collections::HashMap;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use std::sync::OnceLock;
@@ -45,17 +44,25 @@ fn get_file_content(file_path: &str) -> String {
     }
 }
 
-fn save_file_content(file_path: &str, file_id: &str, new_content: &str) -> Result<bool, String> {
-    // 寫入文件系統
-    // fs::write(file_path, new_content).map_err(|e| format!("Failed to write file: {}", e))?;
-    
-    // // 更新 FILE_MAP
-    // let mut file_map = FILE_MAP.lock().unwrap();
-    // if let Some(file_info) = file_map.get_mut(file_id) {
-    //     file_info.content = new_content.to_string();
-    // }
+#[tauri::command]
+fn save_file_content(file_id: &str, new_content: &str) -> Result<(), String> {
+    let (_, raw_file_id) = parse_item_id(file_id)?;
+    let pool = DB_POOL
+        .get()
+        .ok_or_else(|| "Database pool not initialized".to_string())?;
+    let conn = pool.get().map_err(|e| format!("Failed to access database: {}", e))?;
 
-    Ok(true)
+    let file_path = get_file_path(&conn, raw_file_id)?;
+    fs::write(&file_path, new_content)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+
+    conn.execute(
+        "UPDATE notes SET updated_at = datetime('now') WHERE id = ?1",
+        rusqlite::params![raw_file_id],
+    )
+    .map_err(|e| format!("Failed to update file metadata: {}", e))?;
+
+    Ok(())
 }
 
 // 啟用 SQLite 外鍵支持
@@ -220,6 +227,48 @@ fn create_file_in_folder(folder_id: &str, file_name: &str) -> Result<FileInfo, S
 }
 
 #[tauri::command]
+fn create_folder_in_folder(folder_id: &str, folder_name: &str) -> Result<FileInfo, String> {
+    // eprintln!("Creating folder '{}' in folder '{}'", folder_name, folder_id);
+    let (_, raw_folder_id) = parse_item_id(folder_id)?;
+    let pool = DB_POOL
+        .get()
+        .ok_or_else(|| "Database pool not initialized".to_string())?;
+    let conn = pool.get().map_err(|e| format!("Failed to access database: {}", e))?;
+
+    // enable_foreign_keys(&conn)?;
+
+    let folder_path = get_folder_path(&conn, raw_folder_id)?;
+    // 確保資料夾存在，如果不存在則建立
+    fs::create_dir_all(&folder_path)
+        .map_err(|e| format!("Failed to prepare folder: {}", e))?;
+
+    // 生成唯一的文件名稱和對應的完整路徑
+    let (candidate_name, candidate_path) = build_unique_file_name(&conn, &folder_path, folder_name)?;
+    fs::create_dir_all(&candidate_path)
+        .map_err(|e| format!("Failed to create folder: {}", e))?;
+
+    let db_path = normalize_path_for_db(&candidate_path);
+    conn.execute(
+        "INSERT INTO folders (name, parent_id, path)
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![candidate_name, raw_folder_id, db_path],
+    )
+    .map_err(|e| format!("Failed to create database record: {}", e))?;
+
+    let created_id = conn.last_insert_rowid() as i32;
+
+    Ok(FileInfo {
+        id: format!("folder-{}", created_id),
+        name: candidate_name,
+        file_path: Some(normalize_path_for_db(&candidate_path)),
+        filetype: FileType::Folder,
+        content: String::new(),
+        children: None,
+        parent_id: Some(format!("folder-{}", raw_folder_id)),
+    })
+}
+
+#[tauri::command]
 fn delete_item(item_id: &str) -> Result<(), String> {
     let (prefix, raw_id) = parse_item_id(item_id)?;
     let pool = DB_POOL
@@ -292,29 +341,6 @@ fn list_all_files() -> Vec<FileInfo> {
 }
 
 static DB_POOL: OnceLock<r2d2::Pool<SqliteConnectionManager>> = OnceLock::new();
-
-fn construct_path(folder_id: i32) -> Result<String, Box<dyn std::error::Error>> {
-    let pool = DB_POOL.get().ok_or("Database pool not initialized")?;
-    let conn = pool.get()?;
-    
-    let (path, parent_id): (String, Option<i32>) = conn.query_row(
-        "SELECT name, parent_id FROM folders WHERE id = ?1",
-        rusqlite::params![folder_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i32>>(1)?,
-            ))
-        }
-    )?;
-    match parent_id {
-        Some(pid) => {
-            let parent_path = construct_path(pid)?;
-            Ok(format!("{}/{}", parent_path.trim_end_matches('/'), path.trim_start_matches('/')))
-        }
-        None => Ok(path)
-    }
-}
 
 fn list_entries(parent_id: Option<i32>) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
     let pool = DB_POOL.get().ok_or("Database pool not initialized")?;
@@ -512,7 +538,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders, create_file_in_folder, delete_item])
+        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders, create_file_in_folder, create_folder_in_folder, delete_item, save_file_content])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

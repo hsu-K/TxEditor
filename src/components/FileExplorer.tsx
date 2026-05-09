@@ -14,6 +14,7 @@ interface FileExplorerProps {
   onFileSelect: (fileId: string) => void;
   onDeleteItem: (itemId: string) => void;
   onCreateFileInFolder: (folderId: string) => void;
+  onCreateFolderInFolder: (folderId: string) => void;
   selectedFileId: string;
   expandedFolders: Set<string>;
   onExpandedFoldersChange: (expanded: Set<string>) => void;
@@ -30,6 +31,7 @@ const FileExplorer = ({
   onFileSelect,
   onDeleteItem,
   onCreateFileInFolder,
+  onCreateFolderInFolder,
   selectedFileId,
   expandedFolders,
   onExpandedFoldersChange,
@@ -119,15 +121,26 @@ const FileExplorer = ({
           onMouseDown={(event) => event.stopPropagation()}
         >
           {contextMenu.item.type === "folder" && (
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                onCreateFileInFolder(contextMenu.item.id);
-                setContextMenu(null);
-              }}
-            >
-              新增檔案
-            </button>
+            <div>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  onCreateFileInFolder(contextMenu.item.id);
+                  setContextMenu(null);
+                }}
+              >
+                新增檔案
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  onCreateFolderInFolder(contextMenu.item.id);
+                  setContextMenu(null);
+                }}
+              >
+                新增資料夾
+              </button>  
+            </div>  
           )}
           <button
             className="context-menu-item danger"

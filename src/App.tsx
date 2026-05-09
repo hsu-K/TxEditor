@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import FileExplorer from "./components/FileExplorer";
 import Editor from "./components/Editor";
 import "./App.css";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface FileItem {
   id: string;
@@ -15,6 +16,29 @@ interface FileItem {
 }
 
 const App = () => {
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState<string>("");
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [explorerWidth, setExplorerWidth] = useState<number>(250);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dirtyFileIds, setDirtyFileIds] = useState<Set<string>>(new Set());
+
+  const filesRef = useRef<FileItem[]>([]);
+  const dirtyFileIdsRef = useRef<Set<string>>(new Set());
+  const savedContentRef = useRef<Map<string, string>>(new Map());
+  const isForceClosingRef = useRef(false);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const isClosingRef = useRef(false);
+  const saveInProgressRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
+    dirtyFileIdsRef.current = dirtyFileIds;
+  }, [dirtyFileIds]);
 
   function convertFileInfo(fileInfo: any): FileItem {
     return {
@@ -35,10 +59,113 @@ const App = () => {
     return [item.id, ...childIds];
   };
 
+  const rememberSavedContents = (items: FileItem[]) => {
+    const next = new Map<string, string>();
+
+    const visit = (nodes: FileItem[]) => {
+      for (const node of nodes) {
+        if (node.type === "file") {
+          next.set(node.id, node.content ?? "");
+        }
+        if (node.children) {
+          visit(node.children);
+        }
+      }
+    };
+
+    visit(items);
+    savedContentRef.current = next;
+  };
+
+  const getFileByIdFromItems = (items: FileItem[], id: string): FileItem | undefined => {
+    const search = (nodes: FileItem[]): FileItem | undefined => {
+      for (const node of nodes) {
+        if (node.id === id) return node;
+        if (node.children) {
+          const found = search(node.children);
+          if (found) return found;
+        }
+      }
+      return undefined;
+    };
+
+    return search(items);
+  };
+
+  const markFileDirty = (fileId: string, content: string) => {
+    const lastSavedContent = savedContentRef.current.get(fileId);
+    if (lastSavedContent === content) {
+      const next = new Set(dirtyFileIdsRef.current);
+      next.delete(fileId);
+      dirtyFileIdsRef.current = next;
+      setDirtyFileIds(next);
+      return;
+    }
+
+    const next = new Set(dirtyFileIdsRef.current);
+    next.add(fileId);
+    dirtyFileIdsRef.current = next;
+    setDirtyFileIds(next);
+  };
+
+  const saveFileById = async (fileId: string) => {
+    const file = getFileByIdFromItems(filesRef.current, fileId);
+    if (!file || file.type !== "file") {
+      return;
+    }
+
+    const content = file.content ?? "";
+    const lastSavedContent = savedContentRef.current.get(fileId);
+    if (lastSavedContent === content) {
+      const next = new Set(dirtyFileIdsRef.current);
+      next.delete(fileId);
+      dirtyFileIdsRef.current = next;
+      setDirtyFileIds(next);
+      return;
+    }
+
+    await invoke("save_file_content", {
+      fileId,
+      newContent: content,
+    });
+
+    savedContentRef.current.set(fileId, content);
+    const next = new Set(dirtyFileIdsRef.current);
+    next.delete(fileId);
+    dirtyFileIdsRef.current = next;
+    setDirtyFileIds(next);
+  };
+
+  const saveDirtyFiles = async () => {
+    if (saveInProgressRef.current) {
+      return saveInProgressRef.current;
+    }
+
+    const saveTask = (async () => {
+      const dirtyIds = Array.from(dirtyFileIdsRef.current);
+
+      for (const fileId of dirtyIds) {
+        try {
+          await saveFileById(fileId);
+        } catch (error) {
+          console.error(`Failed to auto-save ${fileId}:`, error);
+        }
+      }
+    })();
+
+    saveInProgressRef.current = saveTask.finally(() => {
+      saveInProgressRef.current = null;
+    });
+
+    return saveInProgressRef.current;
+  };
+
   async function fetchFiles(options?: { resetExpansion?: boolean; expandFolderIds?: string[] }) {
     const result = await invoke("list_all_files");
     const convertedFiles = (result as any[]).map(file => convertFileInfo(file));
+    filesRef.current = convertedFiles;
     setFiles(convertedFiles);
+    rememberSavedContents(convertedFiles);
 
     if (options?.resetExpansion) {
       // 啟動時只展開 documents 這一層，子資料夾維持收合
@@ -61,13 +188,70 @@ const App = () => {
     fetchFiles({ resetExpansion: true });
   }, []);
 
-  const [files, setFiles] = useState<FileItem[]>([]);
+  useEffect(() => {
+    autosaveTimerRef.current = window.setInterval(() => {
+      void saveDirtyFiles();
+    }, 5000);
 
-  const [selectedFileId, setSelectedFileId] = useState<string>("");
-  const [openTabs, setOpenTabs] = useState<string[]>([]);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [explorerWidth, setExplorerWidth] = useState<number>(250);
-  const [isDragging, setIsDragging] = useState(false);
+    return () => {
+      if (autosaveTimerRef.current !== null) {
+        window.clearInterval(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setupCloseHandler = async () => {
+      const appWindow = getCurrentWindow();
+      unlisten = await appWindow.onCloseRequested((event) => {
+        if (isForceClosingRef.current) {
+          return;
+        }
+
+        event.preventDefault();
+
+        if (isClosingRef.current) {
+          return;
+        }
+
+        isClosingRef.current = true;
+
+        if (autosaveTimerRef.current !== null) {
+          window.clearInterval(autosaveTimerRef.current);
+          autosaveTimerRef.current = null;
+        }
+
+        void (async () => {
+          if (autosaveTimerRef.current !== null) {
+            window.clearInterval(autosaveTimerRef.current);
+            autosaveTimerRef.current = null;
+          }
+
+          try {
+            await saveDirtyFiles();
+            isForceClosingRef.current = true;
+            unlisten?.();
+            window.setTimeout(() => {
+              void appWindow.close();
+            }, 0);
+          } catch (error) {
+            isForceClosingRef.current = false;
+            isClosingRef.current = false;
+            window.alert(error instanceof Error ? error.message : "關閉前存檔失敗");
+          }
+        })();
+      });
+    };
+
+    void setupCloseHandler();
+
+    return () => {
+      void unlisten?.();
+    };
+  }, []);
 
   // 利用id來尋找文件，無論它在文件樹的哪個位置
   const getFileById = (id: string): FileItem | undefined => {
@@ -116,12 +300,24 @@ const App = () => {
       });
     };
 
-    setFiles(updateFileContent(files));
+    const nextFiles = updateFileContent(filesRef.current);
+    filesRef.current = nextFiles;
+    setFiles(nextFiles);
+    markFileDirty(selectedFileId, content);
   };
 
   // 處理tab被關閉的情況，若正好是當前選中的文件被關閉，則切換到最後一個打開的tab
   // 若所有tabs都關閉，則清空selectedFileId
-  const handleCloseTab = (fileId: string) => {
+  const handleCloseTab = async (fileId: string) => {
+    try {
+      if (dirtyFileIdsRef.current.has(fileId)) {
+        await saveFileById(fileId);
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "存檔失敗");
+      return;
+    }
+
     const newTabs = openTabs.filter((id) => id !== fileId);
     setOpenTabs(newTabs);
     if (selectedFileId === fileId) {
@@ -205,6 +401,44 @@ const App = () => {
     }
   };
 
+  const handleCreateFolderInFolder = async (folderId: string) => {
+    const folderName = window.prompt("請輸入新資料夾名稱", "new_folder");
+    if (!folderName) {
+      return;
+    }
+
+    const normalizedFolderName = folderName.trim();
+    if (!normalizedFolderName) {
+      return;
+    }
+
+    if (normalizedFolderName.includes("/") || normalizedFolderName.includes("\\")) {
+      window.alert("資料夾名稱不能包含路徑分隔符號");
+      return;
+    }
+
+    try {
+      console.log(`Creating folder '${normalizedFolderName}' in folder '${folderId}'`);
+        const createdFolder = await invoke<FileItem>("create_folder_in_folder", {
+          folderId,
+          folderName: normalizedFolderName,
+      });
+      
+      console.log("Created folder:", createdFolder);
+      await fetchFiles();
+      setOpenTabs((current) => (current.includes(createdFolder.id) ? current : [...current, createdFolder.id]));
+      setSelectedFileId(createdFolder.id);
+      setExpandedFolders((current) => {
+        const next = new Set(current);
+        next.add(folderId);
+        return next;
+      });
+    } catch (error) {
+      console.error("Backend error:", error);
+      window.alert(error instanceof Error ? error.message : "建立資料夾失敗");
+    }
+  };
+
   const selectedFile = getFileById(selectedFileId);
 
   // 處理分割線拖動
@@ -236,6 +470,7 @@ const App = () => {
             onFileSelect={handleFileSelect} 
             onDeleteItem={handleDeleteItem}
             onCreateFileInFolder={handleCreateFileInFolder}
+            onCreateFolderInFolder={handleCreateFolderInFolder}
             selectedFileId={selectedFileId}
             expandedFolders={expandedFolders}
             onExpandedFoldersChange={setExpandedFolders}
@@ -260,7 +495,7 @@ const App = () => {
                     className="tab-close"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleCloseTab(tabId);
+                      void handleCloseTab(tabId);
                     }}
                   >
                     ×
