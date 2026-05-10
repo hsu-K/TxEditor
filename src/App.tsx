@@ -426,7 +426,7 @@ const App = () => {
       
       console.log("Created folder:", createdFolder);
       await fetchFiles();
-      setOpenTabs((current) => (current.includes(createdFolder.id) ? current : [...current, createdFolder.id]));
+      // setOpenTabs((current) => (current.includes(createdFolder.id) ? current : [...current, createdFolder.id]));
       setSelectedFileId(createdFolder.id);
       setExpandedFolders((current) => {
         const next = new Set(current);
