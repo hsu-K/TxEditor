@@ -438,6 +438,28 @@ const App = () => {
       window.alert(error instanceof Error ? error.message : "建立資料夾失敗");
     }
   };
+  const handleMoveItem = async (itemId: string, targetFolderId: string) => {
+    console.log(`🔄 移動項目 ${itemId} -> ${targetFolderId}`);
+
+    try {
+      await invoke("move_item", {
+        itemId,
+        targetFolderId,
+      });
+
+      await fetchFiles({ expandFolderIds: [targetFolderId] });
+      setExpandedFolders((current) => {
+        const next = new Set(current);
+        next.add(targetFolderId);
+        return next;
+      });
+
+      console.log(`✅ 已完成移動 ${itemId}`);
+    } catch (error) {
+      console.error(`❌ 移動失敗 ${itemId} -> ${targetFolderId}:`, error);
+      throw error;
+    }
+  };
 
   const selectedFile = getFileById(selectedFileId);
 
@@ -471,6 +493,7 @@ const App = () => {
             onDeleteItem={handleDeleteItem}
             onCreateFileInFolder={handleCreateFileInFolder}
             onCreateFolderInFolder={handleCreateFolderInFolder}
+            onMoveItem={handleMoveItem}
             selectedFileId={selectedFileId}
             expandedFolders={expandedFolders}
             onExpandedFoldersChange={setExpandedFolders}

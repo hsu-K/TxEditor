@@ -321,6 +321,191 @@ fn delete_item(item_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn path_is_same_or_descendant(candidate: &str, base: &str) -> bool {
+    candidate == base || candidate.starts_with(&format!("{}/", base))
+}
+
+fn replace_path_prefix(path: &str, old_prefix: &str, new_prefix: &str) -> Result<String, String> {
+    if !path.starts_with(old_prefix) {
+        return Err("Path prefix mismatch while moving item".to_string());
+    }
+
+    Ok(format!("{}{}", new_prefix, &path[old_prefix.len()..]))
+}
+
+fn move_file_record(
+    conn: &mut rusqlite::Connection,
+    raw_file_id: i32,
+    raw_target_folder_id: i32,
+) -> Result<(), String> {
+    let (old_path, file_name, current_folder_id): (String, String, Option<i32>) = conn
+        .query_row(
+            "SELECT path, title, folder_id FROM notes WHERE id = ?1",
+            rusqlite::params![raw_file_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i32>>(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query file: {}", e))?
+        .ok_or_else(|| "File not found".to_string())?;
+
+    if current_folder_id == Some(raw_target_folder_id) {
+        return Ok(());
+    }
+
+    let target_folder_path = get_folder_path(conn, raw_target_folder_id)?;
+    let new_path = target_folder_path.join(&file_name);
+    let new_path_db = normalize_path_for_db(&new_path);
+
+    if path_exists_in_db(conn, &new_path_db)? {
+        return Err("Target location already has a file or folder with the same name".to_string());
+    }
+
+    fs::rename(&old_path, &new_path)
+        .map_err(|e| format!("Failed to move file on disk: {}", e))?;
+
+    conn.execute(
+        "UPDATE notes SET folder_id = ?1, path = ?2 WHERE id = ?3",
+        rusqlite::params![raw_target_folder_id, new_path_db, raw_file_id],
+    )
+    .map_err(|e| format!("Failed to update file record: {}", e))?;
+
+    Ok(())
+}
+
+fn move_folder_record(
+    conn: &mut rusqlite::Connection,
+    raw_folder_id: i32,
+    raw_target_folder_id: i32,
+) -> Result<(), String> {
+    let (old_path, folder_name, current_parent_id): (String, String, Option<i32>) = conn
+        .query_row(
+            "SELECT path, name, parent_id FROM folders WHERE id = ?1",
+            rusqlite::params![raw_folder_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i32>>(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query folder: {}", e))?
+        .ok_or_else(|| "Folder not found".to_string())?;
+
+    if current_parent_id == Some(raw_target_folder_id) {
+        return Ok(());
+    }
+
+    if current_parent_id.is_none() {
+        return Err("The root folder cannot be moved".to_string());
+    }
+
+    let target_folder_path = get_folder_path(conn, raw_target_folder_id)?;
+    let target_folder_path_db = normalize_path_for_db(&target_folder_path);
+    if path_is_same_or_descendant(&target_folder_path_db, &old_path) {
+        return Err("Parent folders cannot be moved into their own child folders".to_string());
+    }
+
+    let new_folder_path = target_folder_path.join(&folder_name);
+    let new_folder_path_db = normalize_path_for_db(&new_folder_path);
+
+    if path_exists_in_db(conn, &new_folder_path_db)? {
+        return Err("Target location already has a file or folder with the same name".to_string());
+    }
+
+    fs::rename(&old_path, &new_folder_path)
+        .map_err(|e| format!("Failed to move folder on disk: {}", e))?;
+
+    let tx_result: Result<(), String> = (|| {
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+        tx.execute(
+            "UPDATE folders SET parent_id = ?1, path = ?2 WHERE id = ?3",
+            rusqlite::params![raw_target_folder_id, new_folder_path_db.clone(), raw_folder_id],
+        )
+        .map_err(|e| format!("Failed to update moved folder record: {}", e))?;
+
+        let mut folder_stmt = tx
+            .prepare(
+                "SELECT id, path FROM folders
+                 WHERE id != ?1
+                   AND instr(path, ?2) = 1
+                   AND (length(path) = length(?2) OR substr(path, length(?2) + 1, 1) = '/')",
+            )
+            .map_err(|e| format!("Failed to prepare folder update query: {}", e))?;
+        let folder_rows = folder_stmt
+            .query_map(rusqlite::params![raw_folder_id, old_path], |row| {
+                Ok((row.get::<_, i32>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("Failed to query descendant folders: {}", e))?;
+
+        for row in folder_rows {
+            let (folder_id, path) = row.map_err(|e| format!("Failed to read folder row: {}", e))?;
+            let updated_path = replace_path_prefix(&path, &old_path, &new_folder_path_db)?;
+            tx.execute(
+                "UPDATE folders SET path = ?1 WHERE id = ?2",
+                rusqlite::params![updated_path, folder_id],
+            )
+            .map_err(|e| format!("Failed to update descendant folder path: {}", e))?;
+        }
+
+        let mut note_stmt = tx
+            .prepare(
+                "SELECT id, path FROM notes
+                 WHERE instr(path, ?1) = 1
+                   AND (length(path) = length(?1) OR substr(path, length(?1) + 1, 1) = '/')",
+            )
+            .map_err(|e| format!("Failed to prepare note update query: {}", e))?;
+        let note_rows = note_stmt
+            .query_map(rusqlite::params![old_path], |row| {
+                Ok((row.get::<_, i32>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("Failed to query descendant notes: {}", e))?;
+
+        for row in note_rows {
+            let (note_id, path) = row.map_err(|e| format!("Failed to read note row: {}", e))?;
+            let updated_path = replace_path_prefix(&path, &old_path, &new_folder_path_db)?;
+            tx.execute(
+                "UPDATE notes SET path = ?1 WHERE id = ?2",
+                rusqlite::params![updated_path, note_id],
+            )
+            .map_err(|e| format!("Failed to update descendant note path: {}", e))?;
+        }
+
+        drop(folder_stmt);
+        drop(note_stmt);
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit move transaction: {}", e))?;
+        Ok(())
+    })();
+
+    if let Err(error) = tx_result {
+        let _ = fs::rename(&new_folder_path, &old_path);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn move_item(item_id: &str, target_folder_id: &str) -> Result<(), String> {
+    let (item_prefix, raw_item_id) = parse_item_id(item_id)?;
+    let (target_prefix, raw_target_folder_id) = parse_item_id(target_folder_id)?;
+
+    if target_prefix != "folder" {
+        return Err("Target must be a folder".to_string());
+    }
+
+    let pool = DB_POOL
+        .get()
+        .ok_or_else(|| "Database pool not initialized".to_string())?;
+    let mut conn = pool.get().map_err(|e| format!("Failed to access database: {}", e))?;
+
+    match item_prefix.as_str() {
+        "file" => move_file_record(&mut conn, raw_item_id, raw_target_folder_id),
+        "folder" => move_folder_record(&mut conn, raw_item_id, raw_target_folder_id),
+        _ => Err("Unknown item type".to_string()),
+    }
+}
+
 // 列出所有文件和文件夾信息，並更新全局 FILE_LIST
 #[tauri::command]
 fn list_all_files() -> Vec<FileInfo> {
@@ -538,7 +723,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders, create_file_in_folder, create_folder_in_folder, delete_item, save_file_content])
+        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders, create_file_in_folder, create_folder_in_folder, delete_item, move_item, save_file_content])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
