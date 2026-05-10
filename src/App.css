@@ -115,6 +115,17 @@ html {
   color: #e0e0e0;
 }
 
+/* Tab 拖拉樣式 */
+.tab.tab-dragging {
+  opacity: 0.5;
+  background-color: #3e3e42;
+}
+
+.tab.tab-drag-over {
+  background-color: #007acc;
+  border-left: 3px solid #00d4ff;
+}
+
 .no-file-selected {
   display: flex;
   align-items: center;

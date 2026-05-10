@@ -23,8 +23,11 @@ const App = () => {
   const [explorerWidth, setExplorerWidth] = useState<number>(250);
   const [isDragging, setIsDragging] = useState(false);
   const [dirtyFileIds, setDirtyFileIds] = useState<Set<string>>(new Set());
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
   const filesRef = useRef<FileItem[]>([]);
+  const draggedTabIdRef = useRef<string | null>(null);
   const dirtyFileIdsRef = useRef<Set<string>>(new Set());
   const savedContentRef = useRef<Map<string, string>>(new Map());
   const isForceClosingRef = useRef(false);
@@ -461,6 +464,63 @@ const App = () => {
     }
   };
 
+  // 拖拉 Tab 重新排序
+  const handleTabDragStart = (e: React.DragEvent, tabId: string) => {
+    console.log(`🎯 Tab 拖拉開始: ${tabId}`);
+    draggedTabIdRef.current = tabId;
+    setDraggedTabId(tabId);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", tabId);
+  };
+
+  const handleTabDragEnd = () => {
+    console.log("🛑 Tab 拖拉結束");
+    draggedTabIdRef.current = null;
+    setDraggedTabId(null);
+    setDragOverTabId(null);
+  };
+
+  const handleTabDragOver = (e: React.DragEvent, tabId: string) => {
+    if (draggedTabIdRef.current && draggedTabIdRef.current !== tabId) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setDragOverTabId(tabId);
+    }
+  };
+
+  const handleTabDragLeave = () => {
+    setDragOverTabId(null);
+  };
+
+  const handleTabDrop = (e: React.DragEvent, targetTabId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const draggedId = draggedTabIdRef.current;
+    draggedTabIdRef.current = null;
+    setDraggedTabId(null);
+    setDragOverTabId(null);
+
+    if (!draggedId || draggedId === targetTabId) {
+      return;
+    }
+
+    const draggedIndex = openTabs.indexOf(draggedId);
+    const targetIndex = openTabs.indexOf(targetTabId);
+
+    if (draggedIndex === -1 || targetIndex === -1) {
+      return;
+    }
+
+    console.log(`📦 Tab 重新排序: ${draggedId} 移動到 ${targetTabId} 位置`);
+
+    const newTabs = [...openTabs];
+    newTabs.splice(draggedIndex, 1);
+    newTabs.splice(targetIndex, 0, draggedId);
+
+    setOpenTabs(newTabs);
+  };
+
   const selectedFile = getFileById(selectedFileId);
 
   // 處理分割線拖動
@@ -510,7 +570,13 @@ const App = () => {
               return (
                 <div
                   key={tabId}
-                  className={`tab ${selectedFileId === tabId ? "active" : ""}`}
+                  className={`tab ${selectedFileId === tabId ? "active" : ""} ${draggedTabId === tabId ? "tab-dragging" : ""} ${dragOverTabId === tabId ? "tab-drag-over" : ""}`}
+                  draggable={true}
+                  onDragStart={(e) => handleTabDragStart(e, tabId)}
+                  onDragEnd={handleTabDragEnd}
+                  onDragOver={(e) => handleTabDragOver(e, tabId)}
+                  onDragLeave={handleTabDragLeave}
+                  onDrop={(e) => handleTabDrop(e, tabId)}
                   onClick={() => handleFileSelect(tabId)}
                 >
                   <span className="tab-name">{file?.name}</span>
