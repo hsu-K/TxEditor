@@ -6,13 +6,11 @@ use std::sync::Mutex;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use std::sync::OnceLock;
-use tauri::Manager;
+use tauri::{
+    Manager,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
+};
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 enum FileType {
@@ -65,11 +63,6 @@ fn save_file_content(file_id: &str, new_content: &str) -> Result<(), String> {
     Ok(())
 }
 
-// 啟用 SQLite 外鍵支持
-// fn enable_foreign_keys(conn: &rusqlite::Connection) -> Result<(), String> {
-//     conn.execute_batch("PRAGMA foreign_keys = ON;")
-//         .map_err(|e| format!("Failed to enable foreign keys: {}", e))
-// }
 
 // 解析 item_id，返回 (prefix, id)，例如 "file-123" -> ("file", 123)
 fn parse_item_id(item_id: &str) -> Result<(String, i32), String> {
@@ -719,11 +712,38 @@ pub fn run() {
                 eprintln!("Failed to initialize database: {}", e);
                 e
             })?;
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } => {
+                        println!("left click pressed and released");
+                        // 在这个例子中，当点击托盘图标时，将展示并聚焦于主窗口
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            if !window.is_visible().unwrap_or(false) {
+                                // let _ = window.unminimize();
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            } 
+                            else {
+                                let _ = window.hide();
+                            }
+                        }
+                    }
+                    _ => {
+                        // println!("unhandled event {event:?}");
+                    }
+                })
+                .build(app)?;
             Ok(())
         })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, list_all_files, get_parent_folders, create_file_in_folder, create_folder_in_folder, delete_item, move_item, save_file_content])
+        .invoke_handler(tauri::generate_handler![list_all_files, get_parent_folders, create_file_in_folder, create_folder_in_folder, delete_item, move_item, save_file_content])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
