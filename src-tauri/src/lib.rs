@@ -7,6 +7,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use std::sync::OnceLock;
 use tauri::{
+    menu::{Menu, MenuItem},
     Manager,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 };
@@ -703,8 +704,12 @@ fn get_parent_folders(file_id: &str) -> Vec<String> {
     parents
 }
 
+
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+
     tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
@@ -712,20 +717,33 @@ pub fn run() {
                 eprintln!("Failed to initialize database: {}", e);
                 e
             })?;
+
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_i])?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => {
+                        println!("quit menu item was clicked");
+                        app.exit(0);
+                    }
+                    _ => {
+                        println!("menu item {:?} not handled", event.id);
+                    }
+                })
                 .on_tray_icon_event(|tray, event| match event {
                     TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
                     } => {
-                        println!("left click pressed and released");
-                        // 在这个例子中，当点击托盘图标时，将展示并聚焦于主窗口
+                        
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             if !window.is_visible().unwrap_or(false) {
-                                // let _ = window.unminimize();
+                                let _ = window.unminimize();
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             } 
