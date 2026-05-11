@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tx_editor",
+  "productName": "YuniNoted",
   "version": "0.1.0",
-  "identifier": "com.user.tx_editor",
+  "identifier": "com.user.yuninoted",
   "build": {
     "beforeDevCommand": "yarn dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "tx_editor",
+        "title": "YuniNoted",
         "width": 800,
         "height": 600,
         "dragDropEnabled": false
